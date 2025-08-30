@@ -1,0 +1,206 @@
+import os
+import tkinter as tk
+from tkinter import ttk
+from collections import defaultdict
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+# ------------------ Config categorías ------------------
+CATEGORIES = {
+    "Videos": {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".mpeg", ".mpg"},
+    "Música": {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma"},
+    "Imágenes": {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp", ".heic"},
+    "Documentos": {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".md"},
+    "Comprimidos": {".zip", ".rar", ".7z", ".tar", ".gz"},
+    "Instaladores": {".exe", ".msi", ".apk", ".dmg", ".pkg"},
+}
+
+def get_category(filename: str) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    for cat, exts in CATEGORIES.items():
+        if ext in exts:
+            return cat
+    return "Otros"
+
+def fmt_size(bytes_: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(bytes_)
+    for u in units:
+        if size < 1024 or u == units[-1]:
+            return f"{size:.2f} {u}"
+        size /= 1024.0
+
+def safe_getsize(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except (FileNotFoundError, PermissionError, OSError):
+        return 0
+
+def scan_directory(base_path: str, top_n_files: int = 20):
+    category_sizes = defaultdict(int)
+    files_info = []
+    errors = 0
+
+    for dirpath, _, filenames in os.walk(base_path, onerror=lambda e: None, followlinks=False):
+        for name in filenames:
+            fp = os.path.join(dirpath, name)
+            size = safe_getsize(fp)
+            if size == 0:
+                try:
+                    if os.path.getsize(fp) != 0:
+                        errors += 1
+                except Exception:
+                    errors += 1
+
+            cat = get_category(name)
+            category_sizes[cat] += size
+            files_info.append((fp, size, cat))
+
+    top_files = sorted(files_info, key=lambda x: x[1], reverse=True)[:top_n_files]
+    total_size = sum(category_sizes.values())
+
+    return total_size, top_files, category_sizes, errors
+
+class GestorArchivosApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Gestor de Archivos con Estadísticas")
+        self.current_view = "main"
+
+        user = os.getlogin()
+        base_user = os.path.join("C:\\Users", user)
+        self.target_folders = {
+            "Descargas": os.path.join(base_user, "Downloads"),
+            "Imágenes": os.path.join(base_user, "Pictures"),
+            "Escritorio": os.path.join(base_user, "Desktop"),
+            "Documentos": os.path.join(base_user, "Documents"),
+            "Música": os.path.join(base_user, "Music"),
+            "Videos": os.path.join(base_user, "Videos"),
+        }
+
+        self.frame = ttk.Frame(root)
+        self.frame.pack(fill="both", expand=True)
+
+        # 🔹 Vinculamos la tecla ESC a volver atrás
+        self.root.bind("<Escape>", lambda e: self.go_back())
+
+        self.build_main_view()
+
+    def clear_frame(self):
+        for widget in self.frame.winfo_children():
+            widget.destroy()
+
+    def go_back(self):
+        """Función que permite volver a la vista principal si no estamos ya en ella"""
+        if self.current_view == "folder":
+            self.build_main_view()
+
+    def build_main_view(self):
+        self.clear_frame()
+        self.current_view = "main"
+
+        resumen = []
+        for nombre, ruta in self.target_folders.items():
+            if os.path.exists(ruta):
+                total, _, _, _ = scan_directory(ruta)
+                resumen.append((nombre, total))
+
+        if not resumen:
+            tk.Label(self.frame, text="No se encontraron carpetas para analizar").pack()
+            return
+
+        labels = [nombre for nombre, _ in resumen]
+        sizes = [total for _, total in resumen]
+
+        fig, ax = plt.subplots(figsize=(5, 5))
+        wedges, texts, autotexts = ax.pie(
+            sizes,
+            autopct='%1.1f%%',
+            textprops=dict(color="w")
+        )
+
+        for i, a in enumerate(autotexts):
+            a.set_text(f"{labels[i]} {a.get_text()}")
+
+        ax.legend(wedges, labels, title="Carpetas", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
+        ax.set_title("Uso de espacio por carpetas principales")
+
+        canvas = FigureCanvasTkAgg(fig, master=self.frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        def on_click(event):
+            if event.inaxes == ax:
+                for i, wedge in enumerate(wedges):
+                    if wedge.contains_point([event.x, event.y]):
+                        self.show_folder_view(labels[i])
+                        return
+
+        fig.canvas.mpl_connect("button_press_event", on_click)
+
+    def show_folder_view(self, folder_name):
+        self.clear_frame()
+        self.current_view = "folder"
+
+        ruta = self.target_folders[folder_name]
+        if not os.path.exists(ruta):
+            tk.Label(self.frame, text=f"La carpeta {folder_name} no existe.").pack()
+            return
+
+        total, top_files, cats, errors = scan_directory(ruta)
+
+        labels = list(cats.keys())
+        sizes = list(cats.values())
+
+        if not sizes or sum(sizes) == 0:
+            tk.Label(self.frame, text=f"No se encontraron archivos en {folder_name}.").pack()
+        else:
+            fig, ax = plt.subplots(figsize=(5, 5))
+            wedges, texts, autotexts = ax.pie(
+                sizes,
+                autopct='%1.1f%%',
+                textprops=dict(color="w")
+            )
+
+            for i, a in enumerate(autotexts):
+                a.set_text(f"{labels[i]} {a.get_text()}")
+
+            ax.legend(wedges, labels, title="Categorías", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
+            ax.set_title(f"Uso de espacio en {folder_name}")
+
+            canvas = FigureCanvasTkAgg(fig, master=self.frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        # Sección con scroll
+        container = ttk.Frame(self.frame)
+        container.pack(fill="both", expand=True)
+
+        canvas_scroll = tk.Canvas(container)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas_scroll.yview)
+        scroll_frame = ttk.Frame(canvas_scroll)
+
+        scroll_frame.bind(
+            "<Configure>",
+            lambda e: canvas_scroll.configure(scrollregion=canvas_scroll.bbox("all"))
+        )
+
+        canvas_scroll.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas_scroll.configure(yscrollcommand=scrollbar.set)
+
+        canvas_scroll.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Archivos listados dentro del frame con scroll
+        ttk.Label(scroll_frame, text=f"TOP archivos más pesados en {folder_name}:").pack(pady=5)
+        for path, size, cat in top_files:
+            ttk.Label(scroll_frame, text=f"{fmt_size(size)} | {cat} | {os.path.basename(path)}").pack(anchor="w")
+
+        # Botón volver SIEMPRE visible
+        ttk.Button(self.frame, text="⬅️ Volver", command=self.build_main_view).pack(pady=10)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.geometry("700x600")
+    app = GestorArchivosApp(root)
+    root.mainloop()
